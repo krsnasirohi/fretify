@@ -1,0 +1,4 @@
+jams
+matplotlib
+numpy
+librosa

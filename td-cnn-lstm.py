@@ -1,87 +1,40 @@
-import jams
-import matplotlib.pyplot as plt
-import numpy as np
-from pathlib import Path
-import sys
-from librosa import cqt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-# sys.argv[0] is the script name; sys.argv[1] is the first argument
-if len(sys.argv) > 1:
-    filename = sys.argv[1]
-    print(f"Reading file: {filename}")
-else:
-    print("Please provide a filename.")
+class GuitarFoundationalModel(nn.Module):
+    def __init__(self, input_bins=252, latent_dim=512, num_pitches=49, num_frets=23):
+        super().__init__()
+        # 1. Shared Backbone Encoder
+        self.backbone = nn.Sequential(
+            nn.Linear(input_bins, 256),
+            nn.ReLU(),
+            nn.Linear(256, latent_dim),
+            nn.ReLU()
+        )
+        
+        # 2. Head A: Acoustic Pitch Head
+        self.pitch_head = nn.Linear(latent_dim, num_pitches)
+        
+        # 3. Head B: Tablature Fretboard Head
+        self.tab_head = nn.Linear(latent_dim, 6 * num_frets)
+        self.num_frets = num_frets
+        self.num_pitches = num_pitches
 
-# 1. Load the JAMS file
-jam = jams.load(filename)
-
-# 2. Filter for pitch contours (F0 data)
-# GuitarSet contains 6 pitch_contour annotations, one for each string
-pitch_annotations = jam.search(namespace='pitch_contour')
-
-plt.figure(figsize=(12, 6))
-
-# 3. Loop through each string and plot the time vs frequency data
-for i, ann in enumerate(pitch_annotations):
-    times = []
-    frequencies = []
-    
-    for observation in ann.data:
-        # Each observation contains time, duration, value (dict), and confidence
-        times.append(observation.time)
-        frequencies.append(observation.value['frequency'])
-    
-    # Filter out zeros (where no note is played on that string)
-    times = np.array(times)
-    frequencies = np.array(frequencies)
-    mask = frequencies > 0
-    
-    # Plot this string's frequency over time
-    plt.scatter(times[mask], frequencies[mask], s=2, label=f'String {i+1}')
-
-# 4. Format the graph
-plt.xlabel('Time (Seconds)')
-plt.ylabel('Frequency (Hz)')
-plt.title('GuitarSet Pitch Contour (Frequency vs Time)')
-plt.legend()
-plt.grid(True)
-
-# Extract just the file name without the path or extension
-clean_name = Path(filename).stem
-
-# Create the output directory safely
-output_dir = Path("output/figures")
-output_dir.mkdir(parents=True, exist_ok=True)
-
-# Define the final export path
-save_path = output_dir / f"{clean_name}.png"
-
-# Save the figure
-plt.savefig(save_path, dpi=300, bbox_inches="tight")
-print(f"Saved plot to: {save_path}")
-
-# CQT Processing
-
-s = np.linspace(0,1,44100)
-x = pitch_annotations
-fmin = 500
-
-cq_lib = cqt(x, sr=44100, fmin=fmin, n_bins=3, pad_mode='wrap')
-
-plt.imshow(abs(cq_lib),aspect='auto', origin='lower')
-plt.xlabel('Time Steps')
-plt.ylabel('Freq bins')
-plt.title('CQT processed graph')
-plt.legend()
-plt.grid(True)
-
-
-cqt_output_dir = Path("output/cqt_figures")
-cqt_output_dir.mkdir(parents=True, exist_ok=True)
-
-# Define the final export path
-save_path = cqt_output_dir / f"{clean_name}.png"
-
-# Save the figure
-plt.savefig(save_path, dpi=300, bbox_inches="tight")
-print(f"Saved plot to: {save_path}")
+    def forward(self, x):
+        # x shape: (batch, time_frames, input_bins)
+        batch_size, time_frames, _ = x.shape
+        
+        # Pass through shared encoder
+        latent = self.backbone(x)
+        
+        # Head A processing (probabilities per pitch class)
+        pitch_logits = self.pitch_head(latent)
+        pitch_probs = torch.sigmoid(pitch_logits)
+        
+        # Head B processing (probabilities per string per fret class)
+        tab_logits = self.tab_head(latent)
+        tab_logits = tab_logits.view(batch_size, time_frames, 6, self.num_frets)
+        tab_probs = F.softmax(tab_logits, dim=-1)
+        
+        return pitch_probs, tab_probs

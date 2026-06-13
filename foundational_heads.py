@@ -32,6 +32,11 @@ class GuitarFoundationalModel(nn.Module):
 
     def forward(self, x):
         # x shape: (batch, time_frames, input_bins)
+        if x.dim() == 4:
+            x = x.squeeze(1)
+            
+        # 2. THE CRITICAL FIX: We must unpack all 3 values. 
+        # The '_' catches the input_bins value.
         batch_size, time_frames, _ = x.shape
         
         latent = self.backbone(x)
@@ -127,26 +132,26 @@ def train_model(
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4, eps=1e-7)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
-    criterion = nn.CrossEntropyLoss()
 
-    best_val_acc = 0.0
+    # Track best model by lowest validation loss, not highest accuracy
+    best_val_loss = float('inf') 
     best_state = None
     best_epoch = 0
     no_improve = 0
-    history = {"train_acc": [], "val_acc": [], "train_loss": [], "val_loss": []}
+    history = {"train_loss": [], "val_loss": []}
 
     for epoch in range(1, epochs + 1):
-        train_acc, train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        val_acc, val_loss = evaluate(model, val_loader, criterion, device)
+        # FIX: Only expect a single float (loss), and match your new function signatures
+        train_loss = train_one_epoch(model, train_loader, optimizer, device)
+        val_loss = evaluate(model, val_loader, device)
         scheduler.step()
 
-        history["train_acc"].append(train_acc)
-        history["val_acc"].append(val_acc)
         history["train_loss"].append(train_loss)
         history["val_loss"].append(val_loss)
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        # Update best model if loss decreases
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             best_epoch = epoch
             no_improve = 0
@@ -154,8 +159,8 @@ def train_model(
             no_improve += 1
 
         print(
-            f"Epoch {epoch:03d} | train_acc={train_acc:.3f} val_acc={val_acc:.3f} | "
-            f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} | lr={scheduler.get_last_lr()[0]:.6f}"
+            f"Epoch {epoch:03d} | train_loss={train_loss:.4f} val_loss={val_loss:.4f} | "
+            f"lr={scheduler.get_last_lr()[0]:.6f}"
         )
 
         if no_improve >= patience:
@@ -164,24 +169,23 @@ def train_model(
 
     if best_state is not None:
         model.load_state_dict(best_state)
-        print(f"\nLoaded best model from epoch {best_epoch} (val_acc={best_val_acc:.3f})")
+        print(f"\nLoaded best model from epoch {best_epoch} (val_loss={best_val_loss:.4f})")
+        
     return model, history
-
+    
 # ── 4. Training & Evaluation Logic ───────────────────────────────────
 
 def calculate_mtl_loss(pitch_probs, tab_probs, y_pitch, y_tab):
     """Calculates the combined loss for both heads."""
-    # 1. Pitch Loss (Multi-label classification -> Binary Cross Entropy)
+    # 1. Pitch Loss 
     loss_pitch = F.binary_cross_entropy(pitch_probs, y_pitch)
     
-    # 2. Tab Loss (Multi-class per string -> Negative Log Likelihood)
-    # PyTorch expects classes in the 2nd dimension for NLL/CrossEntropy: (batch, classes, time, strings)
-    # So we permute: (batch, time, string, fret) -> (batch, fret, time, string)
-    tab_probs_permuted = tab_probs.permute(0, 3, 1, 2)
-    # Add a small epsilon to prevent log(0)
+    # 2. Tab Loss 
+    # THE FIX: Add .contiguous() to the end of your permute call
+    tab_probs_permuted = tab_probs.permute(0, 3, 1, 2).contiguous()
+    
     loss_tab = F.nll_loss(torch.log(tab_probs_permuted + 1e-8), y_tab)
     
-    # 3. Combine them (you can weight these differently if one dominates)
     return loss_pitch + loss_tab
 
 
@@ -241,7 +245,7 @@ def main() -> None:
     print(f"Using device: {device}")
 
     # 1. Load Actual Data
-    cqt_dir = "./data/guitarset/processed_cqt"
+    cqt_dir = "./output/processed_cqt"
     jams_dir = "./data/guitarset/annotation"
     
     # Ensure they are sorted so they align perfectly

@@ -4,6 +4,10 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from typing import Tuple
 import numpy as np
+import glob
+import os
+import jams
+import librosa
 
 # ── 1. The Model ─────────────────────────────────────────
 
@@ -132,7 +136,7 @@ def train_model(
     history = {"train_acc": [], "val_acc": [], "train_loss": [], "val_loss": []}
 
     for epoch in range(1, epochs + 1):
-        train_acc, train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        train_acc, train_loss = train_one_epoch(model, train_loader, optimizer, device)
         val_acc, val_loss = evaluate(model, val_loader, criterion, device)
         scheduler.step()
 

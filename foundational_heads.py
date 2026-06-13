@@ -45,18 +45,69 @@ class GuitarFoundationalModel(nn.Module):
 
 # ── 2. The Dataset ───────────────────────────────────────────────────
 
-class GuitarDataset(Dataset):
-    """A custom dataset to hold our guitar audio bins, pitch labels, and tab labels."""
-    def __init__(self, x_data, y_pitch, y_tab):
-        self.x_data = torch.FloatTensor(x_data)
-        self.y_pitch = torch.FloatTensor(y_pitch) # Float for BCE Loss
-        self.y_tab = torch.LongTensor(y_tab)      # Long for NLL Loss (class indices)
+class PrecomputedGuitarDataset(Dataset):
+    """Loads pre-computed CQT tensors and parses JAMS files for targets."""
+    def __init__(self, cqt_files, jams_files, time_frames=100, hop_length=512, sr=22050):
+        self.cqt_files = cqt_files
+        self.jams_files = jams_files
+        self.time_frames = time_frames
+        self.hop_length = hop_length
+        self.sr = sr
+        
+        self.min_midi = 40   # Low E2
+        self.max_midi = 88   # High E6 (49 classes)
+        self.mute_class = 22 
+        self.open_strings = [64, 59, 55, 50, 45, 40]
 
     def __len__(self):
-        return len(self.x_data)
+        return len(self.cqt_files)
 
     def __getitem__(self, idx):
-        return self.x_data[idx], self.y_pitch[idx], self.y_tab[idx]
+        # 1. Load Pre-computed CQT
+        cqt = np.load(self.cqt_files[idx]) # Shape: (Total_Frames, 252)
+        total_frames = cqt.shape[0]
+
+        # 2. Initialize Labels
+        Y_pitch = np.zeros((total_frames, 49), dtype=np.float32)
+        Y_tab = np.full((total_frames, 6), self.mute_class, dtype=np.int64)
+
+        # 3. Parse JAMS
+        jam = jams.load(self.jams_files[idx])
+        note_annotations = jam.annotations.search(namespace='note_midi')
+        
+        for string_idx, string_ann in enumerate(note_annotations):
+            for note in string_ann:
+                start_frame = max(0, librosa.time_to_frames(note.time, sr=self.sr, hop_length=self.hop_length))
+                end_frame = min(total_frames, librosa.time_to_frames(note.time + note.duration, sr=self.sr, hop_length=self.hop_length))
+                
+                midi_pitch = int(round(note.value))
+                
+                if self.min_midi <= midi_pitch <= self.max_midi:
+                    pitch_idx = midi_pitch - self.min_midi
+                    Y_pitch[start_frame:end_frame, pitch_idx] = 1.0
+                    
+                    fret = midi_pitch - self.open_strings[string_idx]
+                    if 0 <= fret <= 21:
+                        Y_tab[start_frame:end_frame, string_idx] = fret
+
+        # 4. Chunking/Padding (Ensures batch uniformity)
+        if total_frames > self.time_frames:
+            # Slices the first N frames. (Add random cropping here later for robustness)
+            cqt = cqt[:self.time_frames, :]
+            Y_pitch = Y_pitch[:self.time_frames, :]
+            Y_tab = Y_tab[:self.time_frames, :]
+        else:
+            pad_len = self.time_frames - total_frames
+            cqt = np.pad(cqt, ((0, pad_len), (0, 0)))
+            Y_pitch = np.pad(Y_pitch, ((0, pad_len), (0, 0)))
+            Y_tab = np.pad(Y_tab, ((0, pad_len), (0, 0)), constant_values=self.mute_class)
+
+        # Add the channel dimension for the CNN backbone: (1, time_frames, bins)
+        cqt = np.expand_dims(cqt, axis=0)
+
+        return torch.tensor(cqt, dtype=torch.float32), \
+               torch.tensor(Y_pitch, dtype=torch.float32), \
+               torch.tensor(Y_tab, dtype=torch.long)
 
 # ── 3. Train  Model from Stress_AI ───────────────────────────────────
 
@@ -175,7 +226,6 @@ def evaluate(model, loader, device) -> float:
 # ── 5. Main Execution ────────────────────────────────────────────────
 
 def main() -> None:
-    # Hyperparameters mapping to the model defaults
     input_bins = 252
     time_frames = 100
     num_pitches = 49
@@ -186,27 +236,27 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # 1. Generate Dummy Data (Replace this with your actual data loading logic)
-    print("Generating dummy data...")
-    num_samples = 100
+    # 1. Load Actual Data
+    cqt_dir = "./data/guitarset/processed_cqt"
+    jams_dir = "./data/guitarset/annotation"
     
-    # X shape: (samples, time_frames, input_bins)
-    dummy_x = np.random.randn(num_samples, time_frames, input_bins)
+    # Ensure they are sorted so they align perfectly
+    cqt_files = sorted(glob.glob(os.path.join(cqt_dir, "*.npy")))
+    jams_files = sorted(glob.glob(os.path.join(jams_dir, "*.jams")))
     
-    # Y Pitch shape: (samples, time_frames, num_pitches) -> Multi-hot encoded
-    dummy_y_pitch = np.random.randint(0, 2, size=(num_samples, time_frames, num_pitches))
-    
-    # Y Tab shape: (samples, time_frames, 6 strings) -> Values are fret indices (0 to 22)
-    dummy_y_tab = np.random.randint(0, num_frets, size=(num_samples, time_frames, 6))
+    if not cqt_files:
+        raise ValueError("No .npy files found! Run cqt.py first.")
 
-    # Split into train/val
-    train_ds = GuitarDataset(dummy_x[:80], dummy_y_pitch[:80], dummy_y_tab[:80])
-    val_ds = GuitarDataset(dummy_x[80:], dummy_y_pitch[80:], dummy_y_tab[80:])
+    # 80/20 Split
+    split_idx = int(len(cqt_files) * 0.8)
+    
+    train_ds = PrecomputedGuitarDataset(cqt_files[:split_idx], jams_files[:split_idx], time_frames=time_frames)
+    val_ds = PrecomputedGuitarDataset(cqt_files[split_idx:], jams_files[split_idx:], time_frames=time_frames)
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
-    # 2. Build model with correct arguments
+    # 2. Build model
     model = GuitarFoundationalModel(
         input_bins=input_bins, 
         latent_dim=512, 
@@ -214,21 +264,15 @@ def main() -> None:
         num_frets=num_frets
     ).to(device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
-
-    # 3. Training Loop
-    print("\nStarting Training...")
-    best_val_loss = float('inf')
-
-    for epoch in range(1, epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        val_loss = evaluate(model, val_loader, device)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            # Save logic here if desired
-            
-        print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+    # Note: Passed the remaining arguments exactly as they were in your train_model function
+    train_model(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        epochs=epochs,
+        lr=0.001,
+        device=device
+    )
 
 if __name__ == "__main__":
     main()

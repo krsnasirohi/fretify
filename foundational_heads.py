@@ -172,7 +172,6 @@ def train_model(
         print(f"\nLoaded best model from epoch {best_epoch} (val_loss={best_val_loss:.4f})")
         
     return model, history
-    
 # ── 4. Training & Evaluation Logic ───────────────────────────────────
 
 def calculate_mtl_loss(pitch_probs, tab_probs, y_pitch, y_tab):
@@ -242,18 +241,34 @@ def main() -> None:
     epochs = 10
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
 
     # 1. Load Actual Data
     cqt_dir = "./output/processed_cqt"
     jams_dir = "./data/guitarset/annotation"
     
-    # Ensure they are sorted so they align perfectly
-    cqt_files = sorted(glob.glob(os.path.join(cqt_dir, "*.npy")))
-    jams_files = sorted(glob.glob(os.path.join(jams_dir, "*.jams")))
+    # Grab all files
+    raw_cqt_files = glob.glob(os.path.join(cqt_dir, "*.npy"))
+    raw_jams_files = glob.glob(os.path.join(jams_dir, "*.jams"))
     
-    if not cqt_files:
+    if not raw_cqt_files:
         raise ValueError("No .npy files found! Run cqt.py first.")
+
+    # Create a dictionary of {clean_name: full_path} for JAMS files
+    jams_dict = {os.path.splitext(os.path.basename(f))[0]: f for f in raw_jams_files}
+    
+    cqt_files = []
+    jams_files = []
+    
+    # Only pair files that have BOTH a .npy and a .jams file
+    for cqt_path in sorted(raw_cqt_files):
+        clean_name = os.path.splitext(os.path.basename(cqt_path))[0]
+        if clean_name in jams_dict:
+            cqt_files.append(cqt_path)
+            jams_files.append(jams_dict[clean_name])
+            
+    print(f"Successfully paired {len(cqt_files)} CQT/JAMS combinations.")
 
     # 80/20 Split
     split_idx = int(len(cqt_files) * 0.8)
@@ -277,7 +292,7 @@ def main() -> None:
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        epochs=epochs,
+        epochs=2,
         lr=0.001,
         device=device
     )

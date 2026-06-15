@@ -256,6 +256,7 @@ def main() -> None:
         raise ValueError("No .npy files found! Run cqt.py first.")
 
     # Create a dictionary of {clean_name: full_path} for JAMS files
+    # Create a dictionary of {clean_name: full_path} for JAMS files
     jams_dict = {os.path.splitext(os.path.basename(f))[0]: f for f in raw_jams_files}
     
     cqt_files = []
@@ -263,12 +264,21 @@ def main() -> None:
     
     # Only pair files that have BOTH a .npy and a .jams file
     for cqt_path in sorted(raw_cqt_files):
-        clean_name = os.path.splitext(os.path.basename(cqt_path))[0]
+        # Get the .npy filename (e.g., "00_BN1-129-Eb_comp_hex")
+        raw_name = os.path.splitext(os.path.basename(cqt_path))[0]
+        
+        # Strip the audio-specific suffixes to perfectly match the JAMS name
+        clean_name = raw_name.replace("_hex", "").replace("_mic", "")
+        
         if clean_name in jams_dict:
             cqt_files.append(cqt_path)
             jams_files.append(jams_dict[clean_name])
             
     print(f"Successfully paired {len(cqt_files)} CQT/JAMS combinations.")
+    
+    # Failsafe: Crash immediately if the list is still empty
+    if len(cqt_files) == 0:
+        raise ValueError("Matched 0 files! The .npy and .jams filenames still do not align.")
 
     # 80/20 Split
     split_idx = int(len(cqt_files) * 0.8)
@@ -279,6 +289,8 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
+    print("Loaded training and values")
+
     # 2. Build model
     model = GuitarFoundationalModel(
         input_bins=input_bins, 
@@ -286,6 +298,8 @@ def main() -> None:
         num_pitches=num_pitches, 
         num_frets=num_frets
     ).to(device)
+    
+    print("Built model")
 
     # Note: Passed the remaining arguments exactly as they were in your train_model function
     train_model(
@@ -297,5 +311,7 @@ def main() -> None:
         device=device
     )
 
+    print("Training succesful")
+    
 if __name__ == "__main__":
     main()

@@ -1,4 +1,5 @@
-*.wav
 .venv/
+.venv-basicpitch/
 data/
 output/
+__pycache__/

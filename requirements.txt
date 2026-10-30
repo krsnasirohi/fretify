@@ -1,4 +1,8 @@
-jams
+# Use Python 3.10 (TensorFlow and Basic Pitch don't support 3.13+)
+basic-pitch==0.4.0
+tensorflow-macos==2.15.0
+numpy==1.26.4
+librosa==0.11.0
+jams==0.3.5
+pretty_midi==0.2.11.post0
 matplotlib
-numpy
-librosa

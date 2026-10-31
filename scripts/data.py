@@ -16,6 +16,7 @@ N_FRETS = 25
 TRAIN_PLAYERS = ["00", "01", "02", "03"]
 VAL_PLAYERS = ["04"]
 TEST_PLAYERS = ["05"]
+ALL_PLAYERS = ["00", "01", "02", "03", "04", "05"]
 
 
 def tab_to_fretboard(tab):

@@ -15,10 +15,14 @@ GUITAR_MIN_HZ = pretty_midi.note_number_to_hz(40)
 GUITAR_MAX_HZ = pretty_midi.note_number_to_hz(88)
 
 
-def audio_to_midi(audio_path, midi_out_path):
-    """Run Basic Pitch on a recording and save the transcribed notes as a .mid file."""
-    _, midi_data, _ = predict(
-        audio_path,
+def run_basic_pitch(audio_path):
+    """Run Basic Pitch on a recording.
+
+    Returns (midi_data, note_events). Each note event is
+    (start_seconds, end_seconds, midi_pitch, amplitude, pitch_bends).
+    """
+    _, midi_data, note_events = predict(
+        str(audio_path),
         ICASSP_2022_MODEL_PATH,
         onset_threshold=0.5,       # raise to drop weak/false note starts
         frame_threshold=0.3,       # raise to drop quiet sustained notes
@@ -26,6 +30,12 @@ def audio_to_midi(audio_path, midi_out_path):
         minimum_frequency=GUITAR_MIN_HZ,
         maximum_frequency=GUITAR_MAX_HZ,
     )
+    return midi_data, note_events
+
+
+def audio_to_midi(audio_path, midi_out_path):
+    """Run Basic Pitch on a recording and save the transcribed notes as a .mid file."""
+    midi_data, _ = run_basic_pitch(audio_path)
     midi_data.write(str(midi_out_path))
     return midi_data
 
